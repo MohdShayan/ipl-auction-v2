@@ -77,7 +77,7 @@ class Snapshot {
   }
 }
 
-async function readRoom(roomId) {
+export async function readRoom(roomId) {
   const client = requireSupabase();
   const { data, error } = await client
     .from(TABLE)

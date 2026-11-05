@@ -5,6 +5,7 @@ import {
   goOfflineServer,
   goOnlineServer,
   isServerAvailable,
+  readRoom,
   rtdb,
   waitForServerConnection,
 } from '../lib/supabaseDatabase';
@@ -1272,6 +1273,20 @@ export const AuctionProvider = ({ children }) => {
       }
     };
 
+    const refreshVisibleAuctionState = async () => {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const row = await readRoom(auctionId);
+        if (!row?.state) return;
+        currentRoomData = row.state.room || currentRoomData;
+        currentRtdbData = row.state.live || currentRtdbData;
+        checkAndSet();
+      } catch (error) {
+        console.warn('[auction] Could not refresh state after tab activation', error);
+      }
+    };
+    document.addEventListener('visibilitychange', refreshVisibleAuctionState);
+
     // Presence listener (all users' presence)
     const presenceRef = ref(rtdb, `auctions/${auctionId}/presence`);
     const unsubPresence = onValue(presenceRef, (snap) => {
@@ -1442,6 +1457,7 @@ export const AuctionProvider = ({ children }) => {
       unsubLive();
       unsubTeams();
       unsubMessages();
+      document.removeEventListener('visibilitychange', refreshVisibleAuctionState);
       // Set offline on component unmount
       set(myPresenceRef, { online: false, lastSeen: serverTimestampRtdb() });
 

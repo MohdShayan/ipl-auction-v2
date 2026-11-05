@@ -1289,10 +1289,11 @@ const AuctionRoom = () => {
 
                             return (
                                <motion.div
-                                  key="celebration"
+                                  key={`result-${displayAuctionState.playerId}-${displayAuctionState.status}`}
                                   initial={{ opacity: 0, scale: 0.95, y: 15 }}
                                   animate={{ opacity: 1, scale: 1, y: 0 }}
                                   exit={{ opacity: 0, scale: 1.05 }}
+                                  transition={{ duration: 0.45, ease: 'easeOut' }}
                                   className="w-full max-w-sm sm:max-w-md mx-auto"
                                >
                                   <div className="relative w-full rounded-[2rem] overflow-hidden bg-[#0A0A0B] border border-white/15 shadow-[0_24px_70px_rgba(0,0,0,0.8)]">
