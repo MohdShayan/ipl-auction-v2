@@ -78,7 +78,7 @@ Deploy or run the latest version of Crick Auction locally. No complex CLI is req
    ```
 
 2. **Configure Supabase**
-   Run [`scripts/supabase_schema.sql`](./scripts/supabase_schema.sql) in the Supabase SQL Editor. Enable Google and anonymous sign-in under **Authentication → Providers**, and enable Realtime for `public.auction_states`.
+   Run [`scripts/supabase_schema.sql`](./scripts/supabase_schema.sql) in the Supabase SQL Editor, then run [`scripts/20261105_auction_reliability.sql`](./scripts/20261105_auction_reliability.sql). The second migration adds authoritative bid/settlement RPCs and host-controlled queue persistence; existing rooms should be restarted after applying it so their queue metadata is initialized. Enable Google and anonymous sign-in under **Authentication → Providers**, and enable Realtime for `public.auction_states`.
    Create a `.env` file with your Supabase project settings:
    ```env
    SUPABASE_URL=https://your_project_ref.supabase.co
@@ -93,6 +93,8 @@ Deploy or run the latest version of Crick Auction locally. No complex CLI is req
    The maintenance scripts also require `SUPABASE_URL` and a server-side `SUPABASE_SECRET_KEY`. Keep the secret key private and never expose it through a `VITE_` variable or browser code. `SUPABASE_JWKS_URL` is only needed by a separate server that validates access tokens directly; this Vite app does not currently have such a backend.
 
    To play with friends on different Wi-Fi networks, deploy the Vite app to a public HTTPS host (for example, Vercel or Netlify) and add `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` as that host's build environment variables. Add both the local development URL and deployed site URL to Supabase Auth's allowed redirect URLs. A local `npm run dev` server is not reachable by friends on other networks unless you separately expose it through a secure tunnel.
+
+   **Vercel deployment:** import the repository into Vercel, keep the framework preset as Vite, use `npm run build` as the build command, and use `dist` as the output directory. Add `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` for Production, Preview, and Development environments. The repository's `vercel.json` rewrite is required for direct navigation to `/lobby/:id`, `/auction/:id`, and `/summary/:id`. Never add `SUPABASE_SECRET_KEY` to Vercel because this frontend does not need it.
 
 3. **Start the local daemon**
    ```bash

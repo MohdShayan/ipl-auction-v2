@@ -13,6 +13,7 @@ import {
   startLocalUnsoldSet,
   placeLocalBid,
   endLocalPlayerAuction,
+  manageLocalAuctionQueue,
   pauseLocalAuction,
   resumeLocalAuction,
   endLocalAuction,
@@ -96,6 +97,32 @@ test('startLocalAuction transitions room to active and sets live bidding', () =>
   assert.equal(room.live.currentBid, 0);
   assert.ok(room.live.timerEndsAt > Date.now());
   assert.equal(room.live.playerOrderIndex, 0);
+});
+
+test('host can persist local queue changes and non-hosts cannot', () => {
+  const roomId = 'HOTSPOT-QUEUE1';
+  createLocalRoom(roomId, 'user_host', { name: 'Host', team: 'MI' });
+  startLocalAuction(roomId);
+
+  const started = readLocalRoom(roomId);
+  const firstPending = started.pendingQueue[1];
+  const secondPending = started.pendingQueue[2];
+
+  assert.throws(
+    () => manageLocalAuctionQueue(roomId, 'guest', 'remove', firstPending),
+    /active auction host/,
+  );
+  manageLocalAuctionQueue(roomId, 'user_host', 'remove', firstPending);
+  let room = readLocalRoom(roomId);
+  assert.equal(room.pendingQueue.includes(firstPending), false);
+
+  manageLocalAuctionQueue(roomId, 'user_host', 'add_front', firstPending);
+  room = readLocalRoom(roomId);
+  assert.equal(room.pendingQueue[0], firstPending);
+
+  manageLocalAuctionQueue(roomId, 'user_host', 'move', secondPending, room.pendingQueue.length - 1);
+  room = readLocalRoom(roomId);
+  assert.equal(room.pendingQueue.at(-1), secondPending);
 });
 
 test('host can move an upcoming local set to the end of the player queue', () => {

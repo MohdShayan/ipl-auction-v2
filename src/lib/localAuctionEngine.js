@@ -481,6 +481,14 @@ export function startLocalAuction(roomId) {
 
   room.status = 'active';
   room.playerOrder = playerOrder;
+  room.playerOrderIds = playerOrder.map((index) => IPL_PLAYERS[index]?.id).filter(Boolean);
+  room.playerBasePrices = Object.fromEntries(
+    playerOrder.map((index) => IPL_PLAYERS[index]).filter(Boolean).map((player) => [player.id, player.basePrice]),
+  );
+  room.pendingQueue = [...room.playerOrderIds];
+  room.appearedPlayerIds = [];
+  room.soldPlayerIds = [];
+  room.removedQueuePlayerIds = [];
   room.currentPlayerOrderIndex = 0;
   room.deferredPlayerSets = [];
   room.unsoldPlayerIds = [];
@@ -524,6 +532,13 @@ export function skipLocalUpcomingSet(roomId, userId, setName) {
   if (movedCount === 0) return false;
 
   room.playerOrder = updatedOrder;
+  const completedIds = new Set([
+    ...(room.appearedPlayerIds || []),
+    room.live?.playerId,
+  ]);
+  room.pendingQueue = updatedOrder
+    .map((index) => IPL_PLAYERS[index]?.id)
+    .filter((id) => id && !completedIds.has(id));
   room.deferredPlayerSets = [
     ...new Set([...(room.deferredPlayerSets || []), setName]),
   ];
@@ -569,6 +584,10 @@ export function startLocalUnsoldSet(roomId, userId) {
     ]),
   ];
   room.unsoldPlayerIds = [];
+  room.pendingQueue = [
+    ...insertedIndices.map((index) => IPL_PLAYERS[index].id),
+    ...(room.pendingQueue || []),
+  ].filter((id, index, ids) => ids.indexOf(id) === index);
   room.messages = room.messages || [];
   room.messages.push({
     id: `msg_unsold_set_${Date.now()}`,
@@ -702,6 +721,11 @@ export function endLocalPlayerAuction(roomId) {
 
   const isSold = Boolean(room.live.highBidderId);
   room.live.status = isSold ? 'sold' : 'unsold';
+  room.appearedPlayerIds = [...new Set([...(room.appearedPlayerIds || []), room.live.playerId])];
+  room.pendingQueue = (room.pendingQueue || []).filter((playerId) => playerId !== room.live.playerId);
+  if (isSold) {
+    room.soldPlayerIds = [...new Set([...(room.soldPlayerIds || []), room.live.playerId])];
+  }
 
   const player = IPL_PLAYERS.find((p) => p.id === room.live.playerId);
   const teamDetails = TEAMS.find((t) => t.id === room.live.highBidderTeamId);
@@ -782,7 +806,12 @@ export function endLocalPlayerAuction(roomId) {
 
     const order = current.playerOrder || Array.from({ length: IPL_PLAYERS.length }, (_, i) => i);
     const currentIndex = getCurrentOrderIndex(order, current.live);
-    const nextIndex = currentIndex !== -1 ? order[currentIndex + 1] : order[0];
+    const nextPlayerId = current.pendingQueue?.[0];
+    const nextIndex = nextPlayerId
+      ? IPL_PLAYERS.findIndex((candidate) => candidate.id === nextPlayerId)
+      : currentIndex !== -1
+        ? order[currentIndex + 1]
+        : order[0];
 
     if (nextIndex !== undefined && IPL_PLAYERS[nextIndex]) {
       const nextPlayer = IPL_PLAYERS[nextIndex];
@@ -790,6 +819,7 @@ export function endLocalPlayerAuction(roomId) {
       current.currentPlayerOrderIndex = currentIndex + 1;
       current.live = {
         playerId: nextPlayer.id,
+        basePrice: nextPlayer.basePrice,
         playerOrderIndex: currentIndex + 1,
         currentBid: 0,
         highBidderId: '',
@@ -832,6 +862,50 @@ export function endLocalPlayerAuction(roomId) {
 
     writeLocalRoom(roomId, current);
   }, waitMs);
+}
+
+export function manageLocalAuctionQueue(roomId, userId, action, playerId, position = 0) {
+  const room = readLocalRoom(roomId);
+  if (!room || room.hostId !== userId || room.status !== 'active') {
+    throw new Error('Only the active auction host can manage the queue.');
+  }
+  const currentPlayerId = room.live?.playerId;
+  const pending = [...(room.pendingQueue || [])];
+  const completed = new Set([
+    ...(room.soldPlayerIds || []),
+    ...(room.appearedPlayerIds || []),
+    currentPlayerId,
+  ]);
+  const oldIndex = pending.indexOf(playerId);
+
+  if (action === 'add_front' || action === 'add_position') {
+    if (!IPL_PLAYERS.some((player) => player.id === playerId) || completed.has(playerId) || pending.includes(playerId)) {
+      throw new Error('That player is already active, completed, or queued.');
+    }
+    const insertAt = action === 'add_front'
+      ? 0
+      : Math.max(0, Math.min(Number.isInteger(position) ? position : 0, pending.length));
+    pending.splice(insertAt, 0, playerId);
+  } else if (action === 'remove') {
+    if (oldIndex < 0) throw new Error('That player is not pending in the queue.');
+    pending.splice(oldIndex, 1);
+    room.removedQueuePlayerIds = [...new Set([...(room.removedQueuePlayerIds || []), playerId])];
+  } else if (action === 'move') {
+    if (oldIndex < 0) throw new Error('That player is not pending in the queue.');
+    pending.splice(oldIndex, 1);
+    pending.splice(Math.max(0, Math.min(Number.isInteger(position) ? position : 0, pending.length)), 0, playerId);
+  } else {
+    throw new Error('Unsupported queue action.');
+  }
+
+  room.pendingQueue = pending;
+  room.playerOrderIds = [...new Set([...(room.playerOrderIds || []), ...pending])];
+  room.playerBasePrices = {
+    ...(room.playerBasePrices || {}),
+    ...Object.fromEntries(pending.map((id) => [id, IPL_PLAYERS.find((player) => player.id === id)?.basePrice || 0])),
+  };
+  writeLocalRoom(roomId, room);
+  return room;
 }
 
 /**

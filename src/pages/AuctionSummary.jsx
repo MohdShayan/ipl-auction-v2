@@ -32,6 +32,7 @@ import {
   isOverseasPlayer,
   toFiniteNumber,
 } from '../lib/auctionDisplay';
+import { downloadAuctionResultsCsv } from '../lib/auctionExport';
 
 const AuctionSummary = () => {
   const { id } = useParams();
@@ -52,6 +53,7 @@ const AuctionSummary = () => {
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryError, setSummaryError] = useState(null);
   const [summaryReloadKey, setSummaryReloadKey] = useState(0);
+  const [exporting, setExporting] = useState(false);
 
   const teamCardRefs = React.useRef({});
 
@@ -184,6 +186,27 @@ const AuctionSummary = () => {
 
   const activeAuction = currentAuction || dbAuction;
   const activeTeams = (roomTeams && roomTeams.length > 0) ? roomTeams : dbTeams;
+  const canExport = Boolean(
+    user?.uid &&
+    activeAuction &&
+    (
+      activeAuction.hostId === user.uid ||
+      activeTeams.some((team) => team.userId === user.uid)
+    ),
+  );
+
+  const handleExport = () => {
+    if (!canExport || exporting) return;
+    setExporting(true);
+    try {
+      downloadAuctionResultsCsv({ auction: activeAuction, teams: activeTeams });
+    } catch (error) {
+      console.error('[summary] Failed to export auction results', error);
+      setSummaryError('Could not export the auction results.');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // Derived Data
   const allSoldPlayers = useMemo(() => {
@@ -273,6 +296,17 @@ const AuctionSummary = () => {
             >
               <Home size={14} className="sm:w-4 sm:h-4" /> Menu
             </button>
+            {canExport && (
+              <button
+                type="button"
+                onClick={handleExport}
+                disabled={exporting}
+                className="px-4 sm:px-7 py-2 sm:py-3 bg-[#ff5500] border border-orange-400/30 rounded-xl sm:rounded-2xl hover:bg-[#ff6a1a] text-white font-black uppercase text-[10px] sm:text-xs tracking-wider transition-all flex items-center gap-1.5 sm:gap-2.5 active:scale-95 disabled:opacity-50"
+              >
+                <Download size={14} className="sm:w-4 sm:h-4" />
+                {exporting ? 'Exporting...' : 'Export Results'}
+              </button>
+            )}
           </div>
 
           {/* Title */}

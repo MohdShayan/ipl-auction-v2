@@ -68,6 +68,7 @@ import {
   sendLocalMessage as sendLocalMessageEngine,
   kickLocalPlayer as kickLocalPlayerEngine,
   updateLocalRoomSettings as updateLocalRoomSettingsEngine,
+  manageLocalAuctionQueue,
   setSupabaseClient,
 } from '../lib/localAuctionEngine';
 
@@ -93,6 +94,25 @@ const createRoomCodeTakenError = () => {
   const error = new Error('That room code is already in use. Please try again.');
   error.code = 'ROOM_CODE_TAKEN';
   return error;
+};
+
+const createRequestId = (prefix) => {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return `${prefix}_${uuid || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+};
+
+const getQueuePositionAfterCurrentSet = (auction) => {
+  const pending = auction?.pendingQueue || [];
+  const livePlayerId = auction?.currentAuction?.playerId || auction?.live?.playerId;
+  const livePlayer = IPL_PLAYERS.find((player) => player.id === livePlayerId);
+  if (!livePlayer) return pending.length;
+
+  let lastCurrentSetIndex = -1;
+  pending.forEach((playerId, index) => {
+    const player = IPL_PLAYERS.find((candidate) => candidate.id === playerId);
+    if (player?.set === livePlayer.set) lastCurrentSetIndex = index;
+  });
+  return lastCurrentSetIndex + 1;
 };
 
 const mapSupabaseAuction = (sData) => ({
@@ -469,6 +489,17 @@ export const AuctionProvider = ({ children }) => {
     await updateRtdb(rtdbRoomRef, {
       status: 'active',
       playerOrder: randomizedIndices,
+      playerOrderIds: randomizedIndices.map((index) => IPL_PLAYERS[index]?.id).filter(Boolean),
+      playerBasePrices: Object.fromEntries(
+        randomizedIndices
+          .map((index) => IPL_PLAYERS[index])
+          .filter(Boolean)
+          .map((player) => [player.id, player.basePrice]),
+      ),
+      pendingQueue: randomizedIndices.map((index) => IPL_PLAYERS[index]?.id).filter(Boolean),
+      appearedPlayerIds: [],
+      soldPlayerIds: [],
+      removedQueuePlayerIds: [],
       currentPlayerOrderIndex: 0,
       deferredPlayerSets: [],
       unsoldPlayerIds: [],
@@ -493,6 +524,7 @@ export const AuctionProvider = ({ children }) => {
     const liveRef = ref(rtdb, `auctions/${roomId}/live`);
     await set(liveRef, {
       playerId: IPL_PLAYERS[randomizedIndices[0]].id,
+      basePrice: IPL_PLAYERS[randomizedIndices[0]].basePrice,
       playerOrderIndex: 0,
       currentBid: 0,
       highBidderId: '',
@@ -639,6 +671,24 @@ export const AuctionProvider = ({ children }) => {
     endingPlayerRef.current = true;
 
     try {
+      if (supabase) {
+        const { data, error } = await supabase.rpc('settle_auction_player', {
+          p_auction_id: roomId,
+          p_actor_id: user?.uid || '',
+        });
+        if (!error) {
+          const result = Array.isArray(data) ? data[0] : data;
+          if (!result?.settled) throw new Error(result?.reason || 'The player could not be settled.');
+          endingPlayerRef.current = false;
+          return;
+        }
+        if (!/function .*settle_auction_player|does not exist|PGRST202/i.test(
+          `${error.code || ''} ${error.message || ''}`,
+        )) {
+          throw error;
+        }
+      }
+
       const liveRef = ref(rtdb, `auctions/${roomId}/live`);
       
       // Use a compare-and-set transaction to atomically claim the "end" action.
@@ -840,7 +890,7 @@ export const AuctionProvider = ({ children }) => {
       console.error('[auction] endPlayerAuction failed', err);
       endingPlayerRef.current = false;
     }
-  }, [getSyncedTime, flushAuctionToSupabase]);
+  }, [getSyncedTime, flushAuctionToSupabase, user]);
 
   const joinRoomDb = useCallback(async (roomId, userId, playerDetails, serverHint) => {
     if (serverHint === 'local' || isHotspotRoomCode(roomId) || currentAuction?.server === 'local') {
@@ -1477,6 +1527,27 @@ export const AuctionProvider = ({ children }) => {
     // inside it reads a stale React closure each retry, not the live DB value. We do the check here
     // (from the most recent Supabase-synced team state) and rely on the
     // database compare-and-set operation to enforce it atomically.
+    if (supabase) {
+      const { data, error } = await supabase.rpc('place_auction_bid', {
+        p_auction_id: currentAuction.id,
+        p_request_id: createRequestId('bid'),
+        p_user_id: user.uid,
+        p_team_id: team.teamId,
+        p_user_name: user.displayName || 'Manager',
+        p_base_price: toFiniteNumber(player?.basePrice, 0),
+      });
+      if (!error) {
+        const result = Array.isArray(data) ? data[0] : data;
+        if (!result?.accepted) throw new Error(result?.reason || 'Bid was rejected.');
+        return result;
+      }
+      if (!/function .*place_auction_bid|does not exist|PGRST202/i.test(
+        `${error.code || ''} ${error.message || ''}`,
+      )) {
+        throw error;
+      }
+    }
+
     const cBidSnapshot = toFiniteNumber(currentAuction.currentAuction?.currentBid, 0);
     const incSnapshot = cBidSnapshot < 5 ? 0.20 : 0.25;
     const nextBidSnapshot = cBidSnapshot === 0
@@ -1574,6 +1645,37 @@ export const AuctionProvider = ({ children }) => {
     await updateRtdb(ref(rtdb, `auctions/${roomId}/room`), { settings });
   }, [currentAuction?.server]);
 
+  const manageAuctionQueue = useCallback(async (
+    roomId,
+    action,
+    playerId,
+    position = null,
+  ) => {
+    if (!user || !currentAuction || currentAuction.hostId !== user.uid) {
+      throw new Error('Only the auction host can manage the queue.');
+    }
+    const queuePosition = action === 'add_position'
+      ? getQueuePositionAfterCurrentSet(currentAuction)
+      : position;
+    if (isHotspotRoomCode(roomId) || currentAuction.server === 'local') {
+      return manageLocalAuctionQueue(roomId, user.uid, action, playerId, queuePosition);
+    }
+    if (!supabase) throw new Error('Supabase is not configured.');
+
+    const { data, error } = await supabase.rpc('manage_auction_queue', {
+      p_auction_id: roomId,
+      p_user_id: user.uid,
+      p_action: action,
+      p_player_id: playerId,
+      p_position: queuePosition,
+      p_base_price: toFiniteNumber(IPL_PLAYERS.find((player) => player.id === playerId)?.basePrice, 0),
+    });
+    if (error) throw error;
+    const result = Array.isArray(data) ? data[0] : data;
+    if (!result?.changed) throw new Error(result?.reason || 'Queue change was rejected.');
+    return result;
+  }, [currentAuction, user]);
+
   const pauseAuction = useCallback(async (roomId) => {
     if (!user || !currentAuction || currentAuction.hostId !== user.uid) return;
     if (isHotspotRoomCode(roomId) || currentAuction?.server === 'local') {
@@ -1653,6 +1755,28 @@ export const AuctionProvider = ({ children }) => {
 
   const placeBotBid = useCallback(async (roomId, botUserId, botTeamId, botName, timerSeconds = 10, maxValuation = Infinity, botBudget = Infinity) => {
     if (!roomId) return;
+    if (supabase) {
+      const liveSnapshot = currentAuction?.currentAuction;
+      const player = IPL_PLAYERS.find((item) => item.id === liveSnapshot?.playerId);
+      const { data, error } = await supabase.rpc('place_auction_bid', {
+        p_auction_id: roomId,
+        p_request_id: createRequestId('bot_bid'),
+        p_user_id: botUserId,
+        p_team_id: botTeamId,
+        p_user_name: botName,
+        p_base_price: toFiniteNumber(player?.basePrice, 0),
+      });
+      if (!error) {
+        const result = Array.isArray(data) ? data[0] : data;
+        if (!result?.accepted) return;
+        return result;
+      }
+      if (!/function .*place_auction_bid|does not exist|PGRST202/i.test(
+        `${error.code || ''} ${error.message || ''}`,
+      )) {
+        throw error;
+      }
+    }
     const liveRef = ref(rtdb, `auctions/${roomId}/live`);
 
     await runTransactionRtdb(liveRef, (currentData) => {
@@ -1680,7 +1804,7 @@ export const AuctionProvider = ({ children }) => {
       
       return currentData;
     });
-  }, [getSyncedTime]);
+  }, [currentAuction?.currentAuction, getSyncedTime]);
 
   const addBotTeam = useCallback(async (roomId, teamId) => {
     const rtdbRoomSnap = await get(ref(rtdb, `auctions/${roomId}/room`));
@@ -1926,6 +2050,7 @@ export const AuctionProvider = ({ children }) => {
     placeBid,
     updatePlayerTeam,
     updateRoomSettings,
+    manageAuctionQueue,
     startAuction,
     skipUpcomingSet,
     startUnsoldSet,

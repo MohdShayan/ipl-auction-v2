@@ -85,6 +85,7 @@ const AuctionRoom = () => {
       endAuction,
       messages,
       updateRoomSettings,
+      manageAuctionQueue,
       kickPlayer,
       getSyncedTime
    } = useAuction();
@@ -100,6 +101,8 @@ const AuctionRoom = () => {
    const [selectedTeamId, setSelectedTeamId] = useState(null);
    const [mobileTab, setMobileTab] = useState('arena'); // arena, squad, activity
    const [showSettings, setShowSettings] = useState(false);
+   const [queueSearch, setQueueSearch] = useState('');
+   const [queueActionLoading, setQueueActionLoading] = useState(false);
    const [selectedSetToSkip, setSelectedSetToSkip] = useState('');
    const [showParticipantsOverlay, setShowParticipantsOverlay] = useState(false);
    const [showEndConfirm, setShowEndConfirm] = useState(false);
@@ -109,7 +112,6 @@ const AuctionRoom = () => {
    const fallbackAudioRef = useRef(null);
    const redirectedToLobbyRef = useRef(false);
    const [newTimerValue, setNewTimerValue] = useState(currentAuction?.settings?.bidTimer || 10);
-   const [optimisticState, setOptimisticState] = useState(null);
    const [joiningTeam, setJoiningTeam] = useState(null);
    const [banError, setBanError] = useState(null);
    const [isBiddingInFlight, setIsBiddingInFlight] = useState(false);
@@ -118,14 +120,9 @@ const AuctionRoom = () => {
       return params.get('spectate') === 'true';
    });
 
-   // Clear optimistic state when DB catches up
-   useEffect(() => {
-      if (optimisticState && currentAuction?.currentAuction?.currentBid >= optimisticState.currentBid) {
-         setOptimisticState(null);
-      }
-   }, [currentAuction?.currentAuction?.currentBid, optimisticState]);
-
-   const displayAuctionState = optimisticState || currentAuction?.currentAuction;
+   // The database/realtime state is authoritative. While a bid is in flight,
+   // the button is disabled instead of displaying an unconfirmed bid.
+   const displayAuctionState = currentAuction?.currentAuction;
 
    // Display-only timer derivation. Never write to timerEndsAt here: the
    // deadline and bid acceptance remain owned by AuctionContext/Supabase.
@@ -460,6 +457,27 @@ const AuctionRoom = () => {
    const currentBid = displayAuctionState?.currentBid || 0;
    const increment = currentBid < 5 ? 0.20 : 0.25;
    const nextBidAmount = currentBid === 0 ? (currentPlayer?.basePrice || 0) : currentBid + increment;
+   const pendingQueuePlayers = useMemo(() => {
+      const ids = currentAuction?.pendingQueue || [];
+      const query = queueSearch.trim().toLowerCase();
+      return ids
+         .map((playerId) => IPL_PLAYERS.find((player) => player.id === playerId))
+         .filter((player) => player && (!query || `${player.name} ${player.role} ${player.country} ${player.type}`.toLowerCase().includes(query)));
+   }, [currentAuction?.pendingQueue, queueSearch]);
+   const queueCandidates = useMemo(() => {
+      const pending = new Set(currentAuction?.pendingQueue || []);
+      const completed = new Set([
+         ...(currentAuction?.soldPlayerIds || []),
+         ...(currentAuction?.appearedPlayerIds || []),
+         currentAuction?.currentAuction?.playerId,
+      ]);
+      const query = queueSearch.trim().toLowerCase();
+      return IPL_PLAYERS.filter((player) => (
+         !pending.has(player.id) &&
+         !completed.has(player.id) &&
+         (!query || `${player.name} ${player.role} ${player.country} ${player.type}`.toLowerCase().includes(query))
+      )).slice(0, 12);
+   }, [currentAuction?.pendingQueue, currentAuction?.soldPlayerIds, currentAuction?.appearedPlayerIds, currentAuction?.currentAuction?.playerId, queueSearch]);
    const playerCategories = useMemo(() => {
       const soldIds = new Set();
       const soldWithBids = {};
@@ -844,19 +862,9 @@ const AuctionRoom = () => {
       setError('');
       setIsBiddingInFlight(true);
 
-      setOptimisticState({
-         ...displayAuctionState,
-         currentBid: nextBidAmount,
-         highBidderId: user?.uid,
-         highBidderName: user?.displayName || 'Manager',
-         highBidderTeamId: team?.teamId,
-         timerEndsAt: getSyncedTime() + (currentAuction?.settings?.bidTimer || 10) * 1000
-      });
-
       try {
          await placeBid(nextBidAmount);
       } catch (err) {
-         setOptimisticState(null);
          setError(err.message);
          setTimeout(() => setError(''), 3000);
       } finally {
@@ -1356,6 +1364,11 @@ const AuctionRoom = () => {
                                               <p className="text-[9.5px] sm:text-[10.5px] font-bold text-gray-400 uppercase tracking-[0.2em] sm:tracking-[0.25em] mt-0.5">
                                                  {currentPlayer?.role} • {currentPlayer?.country}
                                               </p>
+                                              {currentPlayer?.rating != null && (
+                                                 <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-amber-400">
+                                                    ★ Rating {currentPlayer.rating}
+                                                 </p>
+                                              )}
                                            </div>
                                         </div>
 
@@ -1400,6 +1413,9 @@ const AuctionRoom = () => {
                                           <div className="flex flex-wrap items-center justify-center lg:justify-start gap-2 mb-2 xl:mb-4">
                                              <span className="bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[8px] md:text-[9px] font-black px-2.5 py-1 rounded-full uppercase tracking-widest">{currentPlayer.role}</span>
                                              <span className="bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[8px] md:text-[9px] font-black px-2.5 py-1 rounded-full uppercase tracking-widest">{currentPlayer.type}</span>
+                                             {currentPlayer.rating != null && (
+                                                <span className="bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px] md:text-[9px] font-black px-2.5 py-1 rounded-full uppercase tracking-widest">★ Rating {currentPlayer.rating}</span>
+                                             )}
                                           </div>
                                           <h2 className="text-2xl sm:text-3xl xl:text-5xl font-black tracking-tight text-white leading-tight break-words">{currentPlayer.name}</h2>
                                        </div>
@@ -1521,7 +1537,7 @@ const AuctionRoom = () => {
                                              <span className="flex items-center gap-2 text-xs xl:text-sm font-black uppercase tracking-widest text-blue-400">
                                                 <Eye size={18} /> Spectator View (Read Only)
                                              </span>
-                                          ) : displayAuctionState?.status === 'paused' ? 'PAUSED' : displayAuctionState?.highBidderId === user?.uid ? "LEADING BIDDER" : `PLACE BID: ₹${formatCrores(nextBidAmount)} Cr`}
+                                          ) : displayAuctionState?.status === 'paused' ? 'PAUSED' : isBiddingInFlight ? 'BID PENDING...' : displayAuctionState?.highBidderId === user?.uid ? "LEADING BIDDER" : `PLACE BID: ₹${formatCrores(nextBidAmount)} Cr`}
                                        </button>
                                        <button onClick={() => setShowPlayersOverlay(true)} className="w-12 h-12 sm:w-14 sm:h-14 xl:w-18 xl:h-18 bg-white/5 border border-white/10 rounded-2xl flex items-center justify-center text-gray-400 hover:bg-white/10 hover:text-white transition-all"><List size={20} /></button>
                                     </div>
@@ -1903,6 +1919,102 @@ const AuctionRoom = () => {
                                  Bring back {unsoldPlayerCount} unsold player{unsoldPlayerCount === 1 ? '' : 's'} as a set
                               </button>
                            ) : null}
+                        </div>
+                     )}
+
+                     {isAdmin && currentAuction?.status === 'active' && currentAuction?.server !== 'local' && (
+                        <div className="bg-gradient-to-b from-emerald-500/[0.06] to-transparent border border-emerald-500/20 p-4 rounded-2xl space-y-3">
+                           <div>
+                              <span className="text-[9px] font-black text-emerald-300 uppercase tracking-widest">
+                                 Auction Queue · Host
+                              </span>
+                              <p className="mt-1 text-[10px] leading-relaxed text-gray-400">
+                                 Add eligible players to the next queue or move/remove pending players without changing completed results.
+                              </p>
+                           </div>
+                           <input
+                              value={queueSearch}
+                              onChange={(event) => setQueueSearch(event.target.value)}
+                              placeholder="Search name, role, country..."
+                              className="w-full rounded-xl border border-white/10 bg-[#15161d] px-3 py-2 text-[10px] font-bold text-white outline-none focus:border-emerald-400/50"
+                           />
+                           <div className="max-h-36 space-y-1 overflow-y-auto custom-scrollbar">
+                              {queueCandidates.map((player) => (
+                                 <button
+                                    key={player.id}
+                                    type="button"
+                                    disabled={queueActionLoading}
+                                    onClick={async () => {
+                                       setQueueActionLoading(true);
+                                       try {
+                                          await manageAuctionQueue(id, 'add_position', player.id);
+                                          setQueueSearch('');
+                                       } catch (actionError) {
+                                          setError(actionError.message || 'Could not add that player.');
+                                          setTimeout(() => setError(''), 3500);
+                                       } finally {
+                                          setQueueActionLoading(false);
+                                       }
+                                    }}
+                                    className="flex w-full items-center justify-between rounded-lg border border-white/5 bg-white/[0.03] px-2.5 py-2 text-left hover:bg-emerald-500/10 disabled:opacity-50"
+                                 >
+                                    <span className="min-w-0 truncate text-[10px] font-bold text-gray-200">{player.name}</span>
+                                    <span className="ml-2 shrink-0 text-[8px] font-black uppercase tracking-wider text-gray-500">Add</span>
+                                 </button>
+                              ))}
+                              {queueCandidates.length === 0 && (
+                                 <p className="py-2 text-center text-[9px] font-bold uppercase tracking-wider text-gray-600">No eligible players found</p>
+                              )}
+                           </div>
+                           <p className="text-[9px] font-bold text-gray-500">
+                              Added players join after the remaining players in the current set.
+                           </p>
+                           <div className="border-t border-white/5 pt-2">
+                              <p className="mb-2 text-[8px] font-black uppercase tracking-widest text-gray-600">Pending queue</p>
+                              <div className="max-h-32 space-y-1 overflow-y-auto custom-scrollbar">
+                                 {pendingQueuePlayers.map((player) => (
+                                    <div key={player.id} className="flex items-center gap-1">
+                                       <span className="min-w-0 flex-1 truncate text-[9px] font-bold text-gray-300">{player.name}</span>
+                                       <button
+                                          type="button"
+                                          disabled={queueActionLoading}
+                                          onClick={async () => {
+                                             setQueueActionLoading(true);
+                                             try {
+                                                await manageAuctionQueue(id, 'move', player.id, 0);
+                                             } catch (actionError) {
+                                                setError(actionError.message || 'Could not move that player.');
+                                                setTimeout(() => setError(''), 3500);
+                                             } finally {
+                                                setQueueActionLoading(false);
+                                             }
+                                          }}
+                                          className="rounded px-1.5 py-1 text-[8px] font-black uppercase text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
+                                       >
+                                          Next
+                                       </button>
+                                       <button
+                                          type="button"
+                                          disabled={queueActionLoading}
+                                          onClick={async () => {
+                                             setQueueActionLoading(true);
+                                             try {
+                                                await manageAuctionQueue(id, 'remove', player.id);
+                                             } catch (actionError) {
+                                                setError(actionError.message || 'Could not remove that player.');
+                                                setTimeout(() => setError(''), 3500);
+                                             } finally {
+                                                setQueueActionLoading(false);
+                                             }
+                                          }}
+                                          className="rounded px-1.5 py-1 text-[8px] font-black uppercase text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                                       >
+                                          Remove
+                                       </button>
+                                    </div>
+                                 ))}
+                              </div>
+                           </div>
                         </div>
                      )}
 

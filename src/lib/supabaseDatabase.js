@@ -374,6 +374,7 @@ export function onValue(reference, listener, onError) {
   let cancelled = false;
   let eventRevision = 0;
   let initialSnapshotStarted = false;
+  let latestVersion = -1;
   const channel = supabase
     .channel(`auction-state:${roomPath.roomId}:${randomKey()}`)
     .on('postgres_changes', {
@@ -383,6 +384,9 @@ export function onValue(reference, listener, onError) {
       filter: `id=eq.${roomPath.roomId}`,
     }, (payload) => {
       if (cancelled) return;
+      const version = Number(payload.new?.version);
+      if (Number.isFinite(version) && version < latestVersion) return;
+      if (Number.isFinite(version)) latestVersion = version;
       eventRevision += 1;
       const state = payload.eventType === 'DELETE' ? {} : payload.new?.state || {};
       listener(new Snapshot(getReferenceValue(reference, state), roomPath.keys.at(-1) || roomPath.roomId));
@@ -393,6 +397,8 @@ export function onValue(reference, listener, onError) {
         const revisionBeforeRead = eventRevision;
         readRoom(roomPath.roomId).then((row) => {
           if (!cancelled && eventRevision === revisionBeforeRead) {
+            if (row.version < latestVersion) return;
+            latestVersion = row.version;
             listener(new Snapshot(
               getReferenceValue(reference, row.state),
               roomPath.keys.at(-1) || roomPath.roomId,
