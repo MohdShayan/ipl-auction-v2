@@ -1658,7 +1658,13 @@ export const AuctionProvider = ({ children }) => {
       ? getQueuePositionAfterCurrentSet(currentAuction)
       : position;
     if (isHotspotRoomCode(roomId) || currentAuction.server === 'local') {
-      return manageLocalAuctionQueue(roomId, user.uid, action, playerId, queuePosition);
+      const updatedRoom = manageLocalAuctionQueue(roomId, user.uid, action, playerId, queuePosition);
+      setCurrentAuction((previous) => ({
+        ...previous,
+        ...updatedRoom,
+        currentAuction: updatedRoom.live || previous.currentAuction,
+      }));
+      return updatedRoom;
     }
     if (!supabase) throw new Error('Supabase is not configured.');
 
@@ -1673,6 +1679,21 @@ export const AuctionProvider = ({ children }) => {
     if (error) throw error;
     const result = Array.isArray(data) ? data[0] : data;
     if (!result?.changed) throw new Error(result?.reason || 'Queue change was rejected.');
+    if (result.state?.room) {
+      setCurrentAuction((previous) => ({
+        ...previous,
+        ...result.state.room,
+        currentAuction: result.state.live || previous.currentAuction,
+      }));
+      if (result.state.teams) {
+        setRoomTeams(
+          Object.values(result.state.teams).map((team) => ({
+            id: `${roomId}_${team.userId}`,
+            ...team,
+          })),
+        );
+      }
+    }
     return result;
   }, [currentAuction, user]);
 

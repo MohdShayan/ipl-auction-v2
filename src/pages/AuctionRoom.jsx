@@ -488,46 +488,29 @@ const AuctionRoom = () => {
          });
       });
 
-      const playerOrder = currentAuction?.playerOrder || Array.from({ length: IPL_PLAYERS.length }, (_, i) => i);
-      const currentPlayerIndexInOrder = getCurrentOrderIndex(playerOrder, displayAuctionState);
-
       const upcoming = [];
       const sold = [];
       const unsold = [];
-      const seenUpcoming = new Set();
-      const seenSold = new Set();
-      const seenUnsold = new Set();
-      const upcomingPlayerIds = new Set(
-         playerOrder
-            .slice(Math.max(
-               currentPlayerIndexInOrder +
-                  (['bidding', 'paused'].includes(displayAuctionState?.status) ? 0 : 1),
-               0,
-            ))
-            .map((idx) => IPL_PLAYERS[idx]?.id)
-            .filter(Boolean),
-      );
+      const currentPlayerId = displayAuctionState?.playerId;
+      const pendingIds = currentAuction?.pendingQueue || [];
+      const unsoldIds = currentAuction?.unsoldPlayerIds || [];
 
-      playerOrder.forEach((idx) => {
-         const p = IPL_PLAYERS[idx];
-         if (!p) return;
-         if (soldIds.has(p.id)) {
-            if (seenSold.has(p.id)) return;
-            seenSold.add(p.id);
-            sold.push({ ...p, ...soldWithBids[p.id] });
-         } else if (upcomingPlayerIds.has(p.id)) {
-            if (seenUpcoming.has(p.id)) return;
-            seenUpcoming.add(p.id);
-            upcoming.push(p);
-         } else {
-            if (seenUnsold.has(p.id)) return;
-            seenUnsold.add(p.id);
-            unsold.push(p);
-         }
+      pendingIds.forEach((playerId) => {
+         if (playerId === currentPlayerId || soldIds.has(playerId)) return;
+         const player = IPL_PLAYERS.find((candidate) => candidate.id === playerId);
+         if (player) upcoming.push(player);
+      });
+      soldIds.forEach((playerId) => {
+         const player = IPL_PLAYERS.find((candidate) => candidate.id === playerId);
+         if (player) sold.push({ ...player, ...soldWithBids[playerId] });
+      });
+      unsoldIds.forEach((playerId) => {
+         const player = IPL_PLAYERS.find((candidate) => candidate.id === playerId);
+         if (player && !soldIds.has(playerId)) unsold.push(player);
       });
 
       return { upcoming, sold, unsold };
-   }, [currentAuction?.playerOrder, displayAuctionState, roomTeams]);
+   }, [currentAuction?.pendingQueue, currentAuction?.unsoldPlayerIds, displayAuctionState?.playerId, roomTeams]);
 
    const filteredPlayers = useMemo(() => {
       let players = [];

@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildAuctionResultsCsv } from '../src/lib/auctionExport.js';
+import { buildAuctionResultsJson } from '../src/lib/auctionExport.js';
 
-test('buildAuctionResultsCsv exports auction metadata, owners, and player name-price pairs', () => {
-  const csv = buildAuctionResultsCsv({
+test('buildAuctionResultsJson exports auction metadata, owners, and player name-price pairs', () => {
+  const result = buildAuctionResultsJson({
     auction: {
       id: 'ROOM1',
       auctionType: 'mega',
@@ -21,14 +21,12 @@ test('buildAuctionResultsCsv exports auction metadata, owners, and player name-p
     }],
   });
 
-  assert.match(csv, /Jasprit Bumrah/);
-  assert.match(csv, /Mumbai Indians/);
-  assert.match(csv, /Manager One/);
-  assert.match(csv, /Unclaimed/);
-  assert.match(csv, /Auction ID/);
-  assert.match(csv, /Auction Type/);
-  assert.match(csv, /Player 1 Name/);
-  assert.match(csv, /Player 1 Price \(Cr\)/);
-  assert.doesNotMatch(csv, /Player Role/);
-  assert.doesNotMatch(csv, /Original Team/);
+  assert.equal(result.auctionId, 'ROOM1');
+  assert.equal(result.auctionType, 'mega');
+  assert.deepEqual(result.teams[0], {
+    teamName: 'Mumbai Indians',
+    ownerName: 'Manager One',
+    players: [{ name: 'Jasprit Bumrah', price: 3 }],
+  });
+  assert.equal(result.teams[1].ownerName, 'Unclaimed');
 });
