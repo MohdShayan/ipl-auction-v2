@@ -702,6 +702,7 @@ const AuctionRoom = () => {
                   audio.pause();
                   audio.src = TEAM_SONGS[teamId.toLowerCase()];
                   audio.volume = 0.5;
+                  audio.load();
                   audio.play().catch(() => {
                      // Autoplay can be blocked until a user gesture; non-fatal.
                   });
@@ -724,6 +725,7 @@ const AuctionRoom = () => {
                   audio.pause();
                   audio.src = randomAudio;
                   audio.volume = 0.7;
+                  audio.load();
                   const playPromise = audio.play();
                   if (playPromise !== undefined) {
                      playPromise.catch(() => {

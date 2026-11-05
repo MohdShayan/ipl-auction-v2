@@ -2075,6 +2075,45 @@ export const AuctionProvider = ({ children }) => {
     return () => clearTimeout(timer);
   }, [currentAuction, user, roomTeams, placeBotBid, getSyncedTime]);
 
+  useEffect(() => {
+    const live = currentAuction?.currentAuction;
+    if (
+      !supabase ||
+      !user?.uid ||
+      currentAuction?.server === 'local' ||
+      currentAuction?.hostId !== user.uid ||
+      !live ||
+      !['sold', 'unsold'].includes(live.status)
+    ) {
+      return undefined;
+    }
+
+    const delay = live.status === 'sold' ? 5000 : 2000;
+    const timer = setTimeout(async () => {
+      try {
+        await supabase.rpc('advance_auction_player', {
+          p_auction_id: currentAuction.id,
+          p_actor_id: user.uid,
+        });
+      } catch (error) {
+        if (!/function .*advance_auction_player|does not exist|PGRST202/i.test(
+          `${error?.code || ''} ${error?.message || ''}`,
+        )) {
+          console.error('[auction] Failed to advance after result display', error);
+        }
+      }
+    }, delay);
+
+    return () => clearTimeout(timer);
+  }, [
+    currentAuction?.currentAuction?.playerId,
+    currentAuction?.currentAuction?.status,
+    currentAuction?.hostId,
+    currentAuction?.id,
+    currentAuction?.server,
+    user?.uid,
+  ]);
+
   const value = {
     currentAuction,
     team,

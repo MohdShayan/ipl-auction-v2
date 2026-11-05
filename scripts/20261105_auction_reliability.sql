@@ -312,35 +312,13 @@ BEGIN
          WITH ORDINALITY AS item(value, index)
     WHERE value = player_id;
 
-    IF jsonb_array_length(pending) > 0 THEN
-        next_player_id := pending ->> 0;
-        pending := pending - 0;
-    END IF;
-
-    IF next_player_id IS NULL AND jsonb_array_length(COALESCE(room -> 'unsoldPlayerIds', '[]'::JSONB)) > 0 THEN
-        live := jsonb_set(live, '{status}', to_jsonb('awaiting_unsold'::TEXT), true);
-        live := jsonb_set(live, '{playerOrderIndex}', to_jsonb(current_index), true);
-    ELSIF next_player_id IS NULL THEN
-        room := jsonb_set(room, '{status}', to_jsonb('completed'::TEXT), true);
-        live := jsonb_set(live, '{status}', to_jsonb('completed'::TEXT), true);
-        live := jsonb_set(live, '{playerOrderIndex}', to_jsonb(current_index), true);
-    ELSE
-        SELECT COALESCE(MIN(index - 1), 0) INTO next_index
-        FROM jsonb_array_elements_text(COALESCE(room -> 'playerOrderIds', '[]'::JSONB))
-             WITH ORDINALITY AS item(value, index)
-        WHERE value = next_player_id;
-        live := jsonb_build_object(
-            'playerId', next_player_id,
-            'playerOrderIndex', next_index,
-            'currentBid', 0,
-            'highBidderId', '',
-            'highBidderName', 'No Bids',
-            'highBidderTeamId', '',
-            'basePrice', COALESCE((room -> 'playerBasePrices' ->> next_player_id)::NUMERIC, 0),
-            'timerEndsAt', now_ms + COALESCE((room -> 'settings' ->> 'bidTimer')::BIGINT, 10) * 1000,
-            'status', 'bidding'
-        );
-    END IF;
+    live := jsonb_set(
+        live,
+        '{status}',
+        to_jsonb(CASE WHEN is_sold THEN 'sold' ELSE 'unsold' END),
+        true
+    );
+    live := jsonb_set(live, '{playerOrderIndex}', to_jsonb(current_index), true);
 
     room := jsonb_set(room, '{pendingQueue}', pending, true);
     current_state := jsonb_set(current_state, '{room}', room, true);
@@ -383,6 +361,101 @@ BEGIN
         squad = EXCLUDED.squad;
 
     RETURN QUERY SELECT true, NULL::TEXT, current_row.state, current_row.version, now_ms;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.advance_auction_player(
+    p_auction_id TEXT,
+    p_actor_id TEXT
+)
+RETURNS TABLE(
+    advanced BOOLEAN,
+    reason TEXT,
+    state JSONB,
+    version INTEGER
+)
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+DECLARE
+    current_row public.auction_states%ROWTYPE;
+    current_state JSONB;
+    room JSONB;
+    live JSONB;
+    pending JSONB;
+    next_player_id TEXT;
+    next_index INTEGER;
+    current_index INTEGER;
+BEGIN
+    IF auth.uid() IS NULL OR auth.uid()::text <> p_actor_id THEN
+        RETURN QUERY SELECT false, 'Only the signed-in host may advance the auction.', NULL::JSONB, 0;
+        RETURN;
+    END IF;
+
+    SELECT * INTO current_row
+    FROM public.auction_states
+    WHERE id = p_auction_id
+    FOR UPDATE;
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT false, 'Auction state was not found.', NULL::JSONB, 0;
+        RETURN;
+    END IF;
+
+    current_state := COALESCE(current_row.state, '{}'::JSONB);
+    room := COALESCE(current_state -> 'room', '{}'::JSONB);
+    live := COALESCE(current_state -> 'live', '{}'::JSONB);
+    IF COALESCE(room ->> 'hostId', '') <> p_actor_id THEN
+        RETURN QUERY SELECT false, 'Only the room host may advance the auction.', current_state, current_row.version;
+        RETURN;
+    END IF;
+    IF COALESCE(live ->> 'status', '') NOT IN ('sold', 'unsold') THEN
+        RETURN QUERY SELECT false, 'The current player is not awaiting advancement.', current_state, current_row.version;
+        RETURN;
+    END IF;
+
+    pending := COALESCE(room -> 'pendingQueue', '[]'::JSONB);
+    current_index := COALESCE((live ->> 'playerOrderIndex')::INTEGER, 0);
+    IF jsonb_array_length(pending) > 0 THEN
+        next_player_id := pending ->> 0;
+        pending := pending - 0;
+    END IF;
+
+    IF next_player_id IS NULL AND jsonb_array_length(COALESCE(room -> 'unsoldPlayerIds', '[]'::JSONB)) > 0 THEN
+        live := jsonb_set(live, '{status}', to_jsonb('awaiting_unsold'::TEXT), true);
+        live := jsonb_set(live, '{playerOrderIndex}', to_jsonb(current_index), true);
+    ELSIF next_player_id IS NULL THEN
+        room := jsonb_set(room, '{status}', to_jsonb('completed'::TEXT), true);
+        live := jsonb_set(live, '{status}', to_jsonb('completed'::TEXT), true);
+    ELSE
+        SELECT COALESCE(MIN(index - 1), 0) INTO next_index
+        FROM jsonb_array_elements_text(COALESCE(room -> 'playerOrderIds', '[]'::JSONB))
+             WITH ORDINALITY AS item(value, index)
+        WHERE value = next_player_id;
+        live := jsonb_build_object(
+            'playerId', next_player_id,
+            'playerOrderIndex', next_index,
+            'currentBid', 0,
+            'highBidderId', '',
+            'highBidderName', 'No Bids',
+            'highBidderTeamId', '',
+            'basePrice', COALESCE((room -> 'playerBasePrices' ->> next_player_id)::NUMERIC, 0),
+            'timerEndsAt', (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT
+                + COALESCE((room -> 'settings' ->> 'bidTimer')::BIGINT, 10) * 1000,
+            'status', 'bidding'
+        );
+    END IF;
+
+    room := jsonb_set(room, '{pendingQueue}', pending, true);
+    current_state := jsonb_set(current_state, '{room}', room, true);
+    current_state := jsonb_set(current_state, '{live}', live, true);
+
+    UPDATE public.auction_states AS auction_state
+    SET state = current_state, version = auction_state.version + 1, updated_at = NOW()
+    WHERE auction_state.id = p_auction_id
+    RETURNING * INTO current_row;
+
+    RETURN QUERY SELECT true, NULL::TEXT, current_row.state, current_row.version;
 END;
 $$;
 
@@ -521,6 +594,8 @@ $$;
 GRANT EXECUTE ON FUNCTION public.place_auction_bid(TEXT, TEXT, TEXT, TEXT, TEXT, NUMERIC)
     TO authenticated;
 GRANT EXECUTE ON FUNCTION public.settle_auction_player(TEXT, TEXT)
+    TO authenticated;
+GRANT EXECUTE ON FUNCTION public.advance_auction_player(TEXT, TEXT)
     TO authenticated;
 GRANT EXECUTE ON FUNCTION public.manage_auction_queue(TEXT, TEXT, TEXT, TEXT, INTEGER, NUMERIC)
     TO authenticated;
